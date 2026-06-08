@@ -2,9 +2,8 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -12,7 +11,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BIN_NAME: ups-monitor
-  RELEASE_TAG: main-latest
 
 jobs:
   test:
@@ -46,9 +44,45 @@ jobs:
       - name: Run tests
         run: cargo test --locked
 
+  verify-version:
+    name: Verify version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Cargo.toml version
+        id: get-version
+        run: |
+          set -euo pipefail
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Cargo.toml version: $version"
+
+      - name: Get tag version
+        id: get-tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag-version=$tag" >> "$GITHUB_OUTPUT"
+          echo "Tag version: $tag"
+
+      - name: Verify version match
+        run: |
+          set -euo pipefail
+          cargo_version="${{ steps.get-version.outputs.version }}"
+          tag_version="${{ steps.get-tag.outputs.tag-version }}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "Error: Cargo.toml version ($cargo_version) does not match tag version ($tag_version)"
+            exit 1
+          fi
+          echo "Version match verified: $cargo_version"
+
   build:
     name: Build ${{ matrix.asset_name }}
-    needs: test
+    needs: [test, verify-version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -57,18 +91,12 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             asset_name: ups-monitor-linux-x86_64
-            archive_name: ups-monitor-linux-x86_64.tar.gz
-            install_deps: sudo apt-get update && sudo apt-get install -y musl-tools
           - os: macos-15-intel
             target: x86_64-apple-darwin
             asset_name: ups-monitor-macos-x86_64
-            archive_name: ups-monitor-macos-x86_64.tar.gz
-            install_deps: "true"
           - os: macos-15
             target: aarch64-apple-darwin
             asset_name: ups-monitor-macos-aarch64
-            archive_name: ups-monitor-macos-aarch64.tar.gz
-            install_deps: "true"
 
     steps:
       - name: Checkout
@@ -96,28 +124,35 @@ jobs:
           rustup default stable
 
       - name: Install target dependencies
-        run: ${{ matrix.install_deps }}
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get update && sudo apt-get install -y musl-tools
+          fi
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package binary
         shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          archive_name="${{ matrix.asset_name }}-${TAG}.tar.gz"
           mkdir -p dist/${{ matrix.asset_name }}
           cp target/${{ matrix.target }}/release/${BIN_NAME} dist/${{ matrix.asset_name }}/${BIN_NAME}
           chmod +x dist/${{ matrix.asset_name }}/${BIN_NAME}
-          tar -C dist -czf dist/${{ matrix.archive_name }} ${{ matrix.asset_name }}
-          shasum -a 256 dist/${{ matrix.archive_name }} > dist/${{ matrix.archive_name }}.sha256
+          tar -C dist -czf "dist/${archive_name}" ${{ matrix.asset_name }}
+          shasum -a 256 "dist/${archive_name}" > "dist/${archive_name}.sha256"
+          echo "archive_name=${archive_name}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: |
-            dist/${{ matrix.archive_name }}
-            dist/${{ matrix.archive_name }}.sha256
+            dist/${{ matrix.asset_name }}-*.tar.gz
+            dist/${{ matrix.asset_name }}-*.tar.gz.sha256
           if-no-files-found: error
 
   release:
@@ -136,41 +171,28 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Move release tag
-        run: |
-          set -euo pipefail
-          git tag -f "${RELEASE_TAG}" "${GITHUB_SHA}"
-          git push -f origin "refs/tags/${RELEASE_TAG}"
-
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
           release_notes="$(mktemp)"
           cat > "${release_notes}" <<EOF
-          Automated build from main.
+          Release ${TAG}
 
           Commit: ${GITHUB_SHA}
 
           Assets:
-          - ups-monitor-linux-x86_64.tar.gz: Linux x86_64, statically linked with musl for older glibc systems such as CentOS 7.
-          - ups-monitor-macos-x86_64.tar.gz: macOS Intel.
-          - ups-monitor-macos-aarch64.tar.gz: macOS Apple Silicon / MacBook M series.
+          - ups-monitor-linux-x86_64-${TAG}.tar.gz: Linux x86_64, statically linked with musl for older glibc systems such as CentOS 7.
+          - ups-monitor-macos-x86_64-${TAG}.tar.gz: macOS Intel.
+          - ups-monitor-macos-aarch64-${TAG}.tar.gz: macOS Apple Silicon / MacBook M series.
           EOF
 
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release edit "${RELEASE_TAG}" \
-              --title "Latest main build" \
-              --notes-file "${release_notes}" \
-              --target "${GITHUB_SHA}"
-          else
-            gh release create "${RELEASE_TAG}" \
-              --title "Latest main build" \
-              --notes-file "${release_notes}" \
-              --target "${GITHUB_SHA}" \
-              --latest
-          fi
+          gh release create "${TAG}" \
+            --title "ups-monitor ${TAG}" \
+            --notes-file "${release_notes}" \
+            --target "${GITHUB_SHA}"
 
-          gh release upload "${RELEASE_TAG}" dist/* --clobber
+          gh release upload "${TAG}" dist/*

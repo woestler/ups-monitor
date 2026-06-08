@@ -33,6 +33,36 @@ cargo build --release
 
 运行时没有额外 SNMP 命令依赖，只需要能访问 UPS NMC 的网络。
 
+## 版本与发布
+
+本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)（语义化版本）。版本号定义在 `Cargo.toml` 中。
+
+### 下载预编译二进制
+
+GitHub Releases 提供 Linux x86_64、macOS Intel 和 macOS Apple Silicon 的预编译二进制：
+
+<https://github.com/woestler/ups-monitor/releases>
+
+### 发布新版本
+
+维护者发布新版本的流程：
+
+1. 更新 `Cargo.toml` 中的 `version` 字段：
+   ```toml
+   [package]
+   version = "0.2.0"
+   ```
+2. 提交版本变更：
+   ```sh
+   git add Cargo.toml && git commit -m "Bump version to 0.2.0"
+   ```
+3. 创建并推送 git tag（CI 会自动校验 tag 与 `Cargo.toml` 版本是否一致）：
+   ```sh
+   git tag v0.2.0
+   git push origin main && git push origin v0.2.0
+   ```
+4. GitHub Actions 自动触发编译，验证版本号后发布对应 tag 的 Release。
+
 ## 配置
 
 创建配置文件：
