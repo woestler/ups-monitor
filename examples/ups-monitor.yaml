@@ -1,0 +1,75 @@
+# UPS Monitor configuration.
+# Copy to /etc/ups-monitor.yaml on Linux, then edit the values below.
+
+snmp:
+  # The monitor uses the pure Rust async-snmp client directly.
+  # UPS NMC address. This matches the address you tested with snmpwalk.
+  address: 192.168.0.255
+  # SNMP UDP port.
+  port: 161
+  # SNMP version: 1, 2c, or 3.
+  version: "3"
+  # Supported for SNMPv3: noAuthNoPriv, authNoPriv, authPriv.
+  security_level: noAuthNoPriv
+  # SNMPv3 user name. For v1/v2c, this is used as the community string.
+  username: local3
+  # Enable these only when security_level is authNoPriv or authPriv.
+  # auth_protocol: SHA
+  # auth_password: change-me
+  # privacy_protocol: AES
+  # privacy_password: change-me
+  # Timeout and retry settings for each poll.
+  timeout: 5s
+  retries: 1
+
+ups:
+  # ups_mib uses standard UPS-MIB OIDs and should work with many NMC cards,
+  # including SANTAK cards that expose RFC1628/UPS-MIB values.
+  # If another UPS needs different OIDs, add a new adapter in src/ups.rs
+  # or override the OIDs/mapping below.
+  adapter: ups_mib
+  oids:
+    # UPS-MIB::upsOutputSource.0
+    # Values: normal(3), battery(5), bypass(4), booster(6), reducer(7).
+    output_source: 1.3.6.1.2.1.33.1.4.1.0
+    # UPS-MIB::upsEstimatedChargeRemaining.0, percent 0-100.
+    battery_charge_percent: 1.3.6.1.2.1.33.1.2.4.0
+    # UPS-MIB::upsBatteryStatus.0
+    # Values: unknown(1), batteryNormal(2), batteryLow(3), batteryDepleted(4).
+    battery_status: 1.3.6.1.2.1.33.1.2.1.0
+    # UPS-MIB::upsEstimatedMinutesRemaining.0. This is logged but not used
+    # as a shutdown trigger yet.
+    runtime_remaining_minutes: 1.3.6.1.2.1.33.1.2.3.0
+  mapping:
+    # Keep both numeric and textual forms because NMC cards can format values differently.
+    on_battery_values: ["5", "battery", "battery(5)"]
+    line_values: ["3", "normal", "normal(3)"]
+    low_battery_values: ["3", "batteryLow", "battery_low", "batteryLow(3)"]
+    depleted_battery_values: ["4", "batteryDepleted", "battery_depleted", "batteryDepleted(4)"]
+
+monitor:
+  # Poll interval. Keep it shorter than max_on_battery.
+  poll_interval: 10s
+  # Shutdown trigger mode:
+  #   battery_capacity    only check battery_charge_percent <= low_battery_percent
+  #   on_battery_duration only check how long the UPS has been on battery
+  #   either              check both; shutdown when either condition is met
+  trigger: either
+  # Used by battery_capacity and either.
+  low_battery_percent: 30
+  # Used by on_battery_duration and either.
+  # For your requested range, set this between 30s and 2m.
+  max_on_battery: 10s
+
+shutdown:
+  # Keep true for the first test run. Set false after confirming logs and SNMP
+  # values are correct.
+  dry_run: true
+  # Linux/systemd force poweroff command. On macOS use ["shutdown", "-h", "now"].
+  command: ["systemctl", "poweroff", "--force", "--force"]
+
+logging:
+  # off, error, warn, info, debug, trace.
+  level: info
+  # Optional log file. When running as systemd, journald also records stdout/stderr.
+  # file: /var/log/ups-monitor.log

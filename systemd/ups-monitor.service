@@ -1,0 +1,14 @@
+[Unit]
+Description=SNMP UPS Monitor
+Documentation=README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ups-monitor --config /etc/ups-monitor.yaml run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
