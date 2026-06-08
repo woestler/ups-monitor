@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: ups-monitor
+  RELEASE_TAG: main-latest
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+            export PATH="${HOME}/.cargo/bin:${PATH}"
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Run tests
+        run: cargo test --locked
+
+  build:
+    name: Build ${{ matrix.asset_name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset_name: ups-monitor-linux-x86_64
+            archive_name: ups-monitor-linux-x86_64.tar.gz
+            install_deps: sudo apt-get update && sudo apt-get install -y musl-tools
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset_name: ups-monitor-macos-x86_64
+            archive_name: ups-monitor-macos-x86_64.tar.gz
+            install_deps: "true"
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset_name: ups-monitor-macos-aarch64
+            archive_name: ups-monitor-macos-aarch64.tar.gz
+            install_deps: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+            export PATH="${HOME}/.cargo/bin:${PATH}"
+          fi
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+
+      - name: Install target dependencies
+        run: ${{ matrix.install_deps }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/${{ matrix.asset_name }}
+          cp target/${{ matrix.target }}/release/${BIN_NAME} dist/${{ matrix.asset_name }}/${BIN_NAME}
+          chmod +x dist/${{ matrix.asset_name }}/${BIN_NAME}
+          tar -C dist -czf dist/${{ matrix.archive_name }} ${{ matrix.asset_name }}
+          shasum -a 256 dist/${{ matrix.archive_name }} > dist/${{ matrix.archive_name }}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            dist/${{ matrix.archive_name }}
+            dist/${{ matrix.archive_name }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Move release tag
+        run: |
+          set -euo pipefail
+          git tag -f "${RELEASE_TAG}" "${GITHUB_SHA}"
+          git push -f origin "refs/tags/${RELEASE_TAG}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          release_notes="$(mktemp)"
+          cat > "${release_notes}" <<EOF
+          Automated build from main.
+
+          Commit: ${GITHUB_SHA}
+
+          Assets:
+          - ups-monitor-linux-x86_64.tar.gz: Linux x86_64, statically linked with musl for older glibc systems such as CentOS 7.
+          - ups-monitor-macos-x86_64.tar.gz: macOS Intel.
+          - ups-monitor-macos-aarch64.tar.gz: macOS Apple Silicon / MacBook M series.
+          EOF
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "Latest main build" \
+              --notes-file "${release_notes}" \
+              --target "${GITHUB_SHA}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --title "Latest main build" \
+              --notes-file "${release_notes}" \
+              --target "${GITHUB_SHA}" \
+              --latest
+          fi
+
+          gh release upload "${RELEASE_TAG}" dist/* --clobber
