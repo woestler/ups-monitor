@@ -65,8 +65,10 @@ shutdown:
   # Keep true for the first test run. Set false after confirming logs and SNMP
   # values are correct.
   dry_run: true
-  # Linux/systemd force poweroff command. On macOS use ["shutdown", "-h", "now"].
-  command: ["systemctl", "poweroff", "--force", "--force"]
+  # Orderly halt command. This follows the same idea as NUT's default:
+  # /sbin/shutdown -h +0. On systemd Linux it still goes through systemd's
+  # normal shutdown path; on macOS /sbin/shutdown is also available.
+  command: ["/sbin/shutdown", "-h", "+0"]
 
 logging:
   # off, error, warn, info, debug, trace.
