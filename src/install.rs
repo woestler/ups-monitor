@@ -8,7 +8,9 @@ use thiserror::Error;
 
 pub const DEFAULT_BINARY_PATH: &str = "/usr/local/bin/ups-monitor";
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/ups-monitor.yaml";
-pub const DEFAULT_SERVICE_PATH: &str = "/etc/systemd/system/ups-monitor.service";
+pub const SERVICE_NAME: &str = "ups-monitor.service";
+pub const DEFAULT_SYSTEMD_SERVICE_DIR: &str = "/etc/systemd/system";
+pub const DEFAULT_SYSTEMD_SERVICE_PATH: &str = "/etc/systemd/system/ups-monitor.service";
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
@@ -35,6 +37,11 @@ pub struct InitReport {
 pub enum InitError {
     #[error("init is only supported on Linux systems")]
     UnsupportedPlatform,
+    #[error(
+        "systemd service installation requires systemctl; pass --service-path for a custom \
+         systemd unit path, or install this monitor with your distribution's service manager"
+    )]
+    SystemctlUnavailable,
     #[error("failed to locate current executable: {0}")]
     CurrentExe(std::io::Error),
     #[error("failed to create directory {path}: {source}")]
@@ -77,7 +84,7 @@ impl Default for InitOptions {
         Self {
             binary_path: DEFAULT_BINARY_PATH.into(),
             config_path: DEFAULT_CONFIG_PATH.into(),
-            service_path: DEFAULT_SERVICE_PATH.into(),
+            service_path: DEFAULT_SYSTEMD_SERVICE_PATH.into(),
             force: false,
             skip_binary_install: false,
             enable: false,
@@ -93,6 +100,7 @@ pub fn init_linux_service(
     if !cfg!(target_os = "linux") {
         return Err(InitError::UnsupportedPlatform);
     }
+    ensure_systemctl_available()?;
 
     let mut report = InitReport::default();
 
@@ -113,22 +121,29 @@ pub fn init_linux_service(
     report.daemon_reloaded = true;
 
     if options.enable {
-        run_systemctl(
-            "enable ups-monitor.service",
-            &["enable", "ups-monitor.service"],
-        )?;
+        run_systemctl("enable ups-monitor.service", &["enable", SERVICE_NAME])?;
         report.enabled = true;
     }
 
     if options.start {
-        run_systemctl(
-            "start ups-monitor.service",
-            &["start", "ups-monitor.service"],
-        )?;
+        run_systemctl("start ups-monitor.service", &["start", SERVICE_NAME])?;
         report.started = true;
     }
 
     Ok(report)
+}
+
+fn ensure_systemctl_available() -> Result<(), InitError> {
+    let output = Command::new("systemctl")
+        .arg("--version")
+        .output()
+        .map_err(|_| InitError::SystemctlUnavailable)?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(InitError::SystemctlUnavailable)
+    }
 }
 
 fn install_current_binary(destination: &Path) -> Result<(), InitError> {
