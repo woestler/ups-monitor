@@ -108,7 +108,10 @@ impl MonitorState {
                 }
 
                 if config.trigger.checks_duration() {
-                    let elapsed = now.saturating_sub(started_at);
+                    let elapsed = sample
+                        .seconds_on_battery
+                        .map(|seconds| Duration::from_secs(u64::from(seconds)))
+                        .unwrap_or_else(|| now.saturating_sub(started_at));
                     if elapsed >= config.max_on_battery {
                         self.shutdown_requested = true;
                         return MonitorDecision {
@@ -240,10 +243,11 @@ pub fn run_monitor_loop(
 
 fn log_sample(sample: &UpsSample) {
     debug!(
-        "UPS sample: source={:?}, charge={:?}, health={:?}, runtime_remaining_minutes={:?}",
+        "UPS sample: source={:?}, charge={:?}, health={:?}, seconds_on_battery={:?}, runtime_remaining_minutes={:?}",
         sample.power_source,
         sample.battery_charge_percent,
         sample.battery_health,
+        sample.seconds_on_battery,
         sample.runtime_remaining_minutes
     );
 }
@@ -282,8 +286,16 @@ mod tests {
             power_source: source,
             battery_charge_percent: charge,
             battery_health: health,
+            seconds_on_battery: None,
             runtime_remaining_minutes: None,
             raw: BTreeMap::new(),
+        }
+    }
+
+    fn sample_with_seconds_on_battery(seconds: u32) -> UpsSample {
+        UpsSample {
+            seconds_on_battery: Some(seconds),
+            ..sample(PowerSource::Battery, Some(80), BatteryHealth::Normal)
         }
     }
 
@@ -346,6 +358,26 @@ mod tests {
 
         assert!(restored.events.contains(&MonitorEvent::OnBatteryCanceled));
         assert!(later.shutdown.is_none());
+    }
+
+    #[test]
+    fn duration_trigger_uses_ups_reported_seconds_on_battery() {
+        let mut state = MonitorState::new();
+        let config = config(ShutdownTrigger::OnBatteryDuration);
+
+        let decision = state.evaluate(
+            &sample_with_seconds_on_battery(70),
+            Duration::from_secs(1),
+            &config,
+        );
+
+        assert_eq!(
+            decision.shutdown.unwrap().reason,
+            ShutdownReason::OnBatteryTooLong {
+                elapsed: Duration::from_secs(70),
+                limit: Duration::from_secs(60)
+            }
+        );
     }
 
     #[test]

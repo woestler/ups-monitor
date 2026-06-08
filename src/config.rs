@@ -161,6 +161,8 @@ pub struct UpsOids {
     pub battery_charge_percent: String,
     pub battery_status: String,
     #[serde(default)]
+    pub seconds_on_battery: Option<String>,
+    #[serde(default)]
     pub runtime_remaining_minutes: Option<String>,
 }
 
@@ -170,6 +172,7 @@ impl Default for UpsOids {
             output_source: "1.3.6.1.2.1.33.1.4.1.0".into(),
             battery_charge_percent: "1.3.6.1.2.1.33.1.2.4.0".into(),
             battery_status: "1.3.6.1.2.1.33.1.2.1.0".into(),
+            seconds_on_battery: Some("1.3.6.1.2.1.33.1.2.2.0".into()),
             runtime_remaining_minutes: Some("1.3.6.1.2.1.33.1.2.3.0".into()),
         }
     }
