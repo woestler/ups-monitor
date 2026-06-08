@@ -94,7 +94,13 @@ ups-monitor print-default-config
 - `1.3.6.1.2.1.33.1.4.1.0`：`upsOutputSource.0`
 - `1.3.6.1.2.1.33.1.2.4.0`：`upsEstimatedChargeRemaining.0`
 - `1.3.6.1.2.1.33.1.2.1.0`：`upsBatteryStatus.0`
+- `1.3.6.1.2.1.33.1.2.2.0`：`upsSecondsOnBattery.0`
 - `1.3.6.1.2.1.33.1.2.3.0`：`upsEstimatedMinutesRemaining.0`
+
+当 UPS/NMC 支持 `upsSecondsOnBattery.0` 时，`on_battery_duration` 会使用 UPS 报告的
+真实电池供电秒数。这样即使 `ups-monitor` 在断电后才启动，也会从 UPS 真正切到电池的
+时间开始计算。若该 OID 未配置或返回无效值，程序会回退到本地第一次轮询到电池供电的
+时间开始计算。
 
 如果你的 SANTAK NMC 返回不同的值，可以在 YAML 中覆盖 `ups.oids` 或 `ups.mapping`。
 如果未来要支持使用不同 MIB 的 UPS，可以在 `src/ups.rs` 中新增一个实现 `UpsAdapter`

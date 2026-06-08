@@ -20,6 +20,7 @@ pub struct UpsSample {
     pub power_source: PowerSource,
     pub battery_charge_percent: Option<u8>,
     pub battery_health: BatteryHealth,
+    pub seconds_on_battery: Option<u32>,
     pub runtime_remaining_minutes: Option<u32>,
     pub raw: BTreeMap<String, String>,
 }
@@ -69,6 +70,9 @@ impl UpsMibAdapter {
             self.oids.battery_charge_percent.clone(),
             self.oids.battery_status.clone(),
         ];
+        if let Some(oid) = &self.oids.seconds_on_battery {
+            oids.push(oid.clone());
+        }
         if let Some(oid) = &self.oids.runtime_remaining_minutes {
             oids.push(oid.clone());
         }
@@ -97,11 +101,18 @@ impl UpsAdapter for UpsMibAdapter {
             .as_ref()
             .and_then(|oid| raw.get(oid))
             .and_then(|value| parse_u32(value));
+        let seconds_on_battery = self
+            .oids
+            .seconds_on_battery
+            .as_ref()
+            .and_then(|oid| raw.get(oid))
+            .and_then(|value| parse_u32(value));
 
         Ok(UpsSample {
             power_source: parse_power_source(output_source, &self.mapping),
             battery_charge_percent: charge,
             battery_health: parse_battery_health(battery_status, &self.mapping),
+            seconds_on_battery,
             runtime_remaining_minutes: runtime,
             raw,
         })
@@ -192,6 +203,7 @@ mod tests {
                     "battery(5)".into(),
                     "25".into(),
                     "batteryLow(3)".into(),
+                    "70".into(),
                     "7".into(),
                 ],
             })
@@ -200,6 +212,7 @@ mod tests {
         assert_eq!(sample.power_source, PowerSource::Battery);
         assert_eq!(sample.battery_charge_percent, Some(25));
         assert_eq!(sample.battery_health, BatteryHealth::Low);
+        assert_eq!(sample.seconds_on_battery, Some(70));
         assert_eq!(sample.runtime_remaining_minutes, Some(7));
     }
 
@@ -208,7 +221,13 @@ mod tests {
         let adapter = UpsMibAdapter::new(UpsOids::default(), UpsMapping::default());
         let sample = adapter
             .read_sample(&FakeSnmp {
-                values: vec!["3".into(), "98".into(), "2".into(), "120".into()],
+                values: vec![
+                    "3".into(),
+                    "98".into(),
+                    "2".into(),
+                    "0".into(),
+                    "120".into(),
+                ],
             })
             .unwrap();
 
