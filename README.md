@@ -52,6 +52,17 @@ shutdown:
 在验证 SNMP 数值和日志期间，请保持 `dry_run: true`。只有在你准备启用真实自动关机时，
 才将它改为 `false`。
 
+默认关机命令使用与 NUT 类似的正常关机流程：
+
+```yaml
+shutdown:
+  command: ["/sbin/shutdown", "-h", "+0"]
+```
+
+`systemctl poweroff` 也可以用于 systemd Linux，但不建议默认使用
+`systemctl poweroff --force --force`。双 `--force` 会跳过很多正常关机步骤，风险更高，
+更适合作为极端情况下的人工兜底，而不是 UPS 监控软件的默认自动动作。
+
 验证配置文件：
 
 ```sh
@@ -161,5 +172,5 @@ ups-monitor --config ./examples/ups-monitor.yaml run
 
 ```yaml
 shutdown:
-  command: ["shutdown", "-h", "now"]
+  command: ["/sbin/shutdown", "-h", "+0"]
 ```

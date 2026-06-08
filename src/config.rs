@@ -343,16 +343,7 @@ fn default_dry_run() -> bool {
 }
 
 fn default_shutdown_command() -> Vec<String> {
-    if cfg!(target_os = "linux") {
-        vec![
-            "systemctl".into(),
-            "poweroff".into(),
-            "--force".into(),
-            "--force".into(),
-        ]
-    } else {
-        vec!["shutdown".into(), "-h".into(), "now".into()]
-    }
+    vec!["/sbin/shutdown".into(), "-h".into(), "+0".into()]
 }
 
 fn default_log_level() -> String {
