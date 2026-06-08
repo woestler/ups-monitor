@@ -107,6 +107,22 @@ sudo ./target/release/ups-monitor init
 `/etc/systemd/system/ups-monitor.service`，并在 `/etc/ups-monitor.yaml` 不存在时创建
 带注释的样本配置文件。已有配置文件和服务文件默认不会被覆盖；需要覆盖时加 `--force`。
 
+`/etc/systemd/system` 是 systemd 发行版中用于本机管理员自定义服务的通用目录，适用于
+Debian/Ubuntu、RHEL/CentOS/Rocky/Alma、Fedora、Arch、openSUSE 等常见 systemd 系统。
+如果你的发行版对 systemd 单元目录有特殊约定，可以覆盖路径：
+
+```sh
+sudo ./target/release/ups-monitor init \
+  --service-path /etc/systemd/system/ups-monitor.service
+```
+
+`init` 会检测 `systemctl`。不使用 systemd 的 Linux 发行版，例如 OpenRC、runit 或 s6
+系统，需要用对应的服务管理器安装守护进程；程序本身仍可用前台方式运行：
+
+```sh
+sudo /usr/local/bin/ups-monitor --config /etc/ups-monitor.yaml run
+```
+
 编辑 `/etc/ups-monitor.yaml`，然后启用并启动服务：
 
 ```sh

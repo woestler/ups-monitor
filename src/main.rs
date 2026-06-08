@@ -10,7 +10,7 @@ use std::{
 };
 use ups_monitor::{
     config::AppConfig,
-    install::{init_linux_service, InitOptions, DEFAULT_BINARY_PATH, DEFAULT_SERVICE_PATH},
+    install::{init_linux_service, InitOptions, DEFAULT_BINARY_PATH, DEFAULT_SYSTEMD_SERVICE_PATH},
     monitor::run_monitor_loop,
     shutdown::CommandShutdownExecutor,
     snmp::{RustSnmpClient, SnmpClient},
@@ -44,7 +44,11 @@ enum Command {
         binary_path: PathBuf,
         #[arg(long)]
         config_path: Option<PathBuf>,
-        #[arg(long, default_value = DEFAULT_SERVICE_PATH)]
+        #[arg(
+            long,
+            default_value = DEFAULT_SYSTEMD_SERVICE_PATH,
+            help = "Systemd unit path. /etc/systemd/system is portable across systemd distributions"
+        )]
         service_path: PathBuf,
         #[arg(long, help = "Overwrite existing config and service files")]
         force: bool,
