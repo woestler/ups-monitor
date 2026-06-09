@@ -3,7 +3,7 @@ use async_snmp::{
     v3::{AuthProtocol, PrivProtocol},
     Auth, Client, Oid, Retry, Value,
 };
-use std::time::Duration;
+use std::{sync::Mutex, time::Duration};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -27,6 +27,8 @@ pub enum SnmpError {
     Protocol(#[from] Box<async_snmp::Error>),
     #[error("failed to create async runtime for SNMP client: {0}")]
     Runtime(std::io::Error),
+    #[error("cached SNMP client state is poisoned")]
+    ClientStatePoisoned,
     #[error("SNMP response returned {actual} values for {expected} requested OIDs")]
     WrongValueCount { expected: usize, actual: usize },
 }
@@ -35,14 +37,24 @@ pub trait SnmpClient {
     fn get_many(&self, oids: &[String]) -> Result<Vec<String>, SnmpError>;
 }
 
-#[derive(Debug, Clone)]
 pub struct RustSnmpClient {
     config: SnmpConfig,
+    runtime: tokio::runtime::Runtime,
+    client: Mutex<Option<Client>>,
 }
 
 impl RustSnmpClient {
-    pub fn new(config: SnmpConfig) -> Self {
-        Self { config }
+    pub fn new(config: SnmpConfig) -> Result<Self, SnmpError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(SnmpError::Runtime)?;
+
+        Ok(Self {
+            config,
+            runtime,
+            client: Mutex::new(None),
+        })
     }
 
     fn build_auth(&self) -> Result<Auth, SnmpError> {
@@ -53,40 +65,73 @@ impl RustSnmpClient {
             other => Err(SnmpError::UnsupportedVersion(other.into())),
         }
     }
+
+    fn connect(&self) -> Result<Client, SnmpError> {
+        let auth = self.build_auth()?;
+        let config = self.config.clone();
+
+        self.runtime
+            .block_on(async move {
+                Client::builder((config.address.as_str(), config.port), auth)
+                    .timeout(config.timeout)
+                    .retry(Retry::fixed(u32::from(config.retries), Duration::ZERO))
+                    .connect()
+                    .await
+            })
+            .map_err(SnmpError::Protocol)
+    }
+
+    fn cached_or_connect(&self) -> Result<Client, SnmpError> {
+        if let Some(client) = self
+            .client
+            .lock()
+            .map_err(|_| SnmpError::ClientStatePoisoned)?
+            .clone()
+        {
+            return Ok(client);
+        }
+
+        let client = self.connect()?;
+        *self
+            .client
+            .lock()
+            .map_err(|_| SnmpError::ClientStatePoisoned)? = Some(client.clone());
+        Ok(client)
+    }
+
+    fn clear_cached_client(&self) -> Result<(), SnmpError> {
+        *self
+            .client
+            .lock()
+            .map_err(|_| SnmpError::ClientStatePoisoned)? = None;
+        Ok(())
+    }
 }
 
 impl SnmpClient for RustSnmpClient {
     fn get_many(&self, oids: &[String]) -> Result<Vec<String>, SnmpError> {
         let parsed_oids = parse_oids(oids)?;
-        let auth = self.build_auth()?;
-        let config = self.config.clone();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(SnmpError::Runtime)?;
-
-        rt.block_on(async move {
-            let client = Client::builder((config.address.as_str(), config.port), auth)
-                .timeout(config.timeout)
-                .retry(Retry::fixed(u32::from(config.retries), Duration::ZERO))
-                .connect()
-                .await?;
-
-            let varbinds = client.get_many(&parsed_oids).await?;
-            let values: Vec<String> = varbinds
-                .into_iter()
-                .map(|varbind| value_to_string(varbind.value))
-                .collect();
-
-            if values.len() != oids.len() {
-                return Err(SnmpError::WrongValueCount {
-                    expected: oids.len(),
-                    actual: values.len(),
-                });
+        let client = self.cached_or_connect()?;
+        let varbinds = match self.runtime.block_on(client.get_many(&parsed_oids)) {
+            Ok(varbinds) => varbinds,
+            Err(error) => {
+                self.clear_cached_client()?;
+                return Err(SnmpError::Protocol(error));
             }
+        };
+        let values: Vec<String> = varbinds
+            .into_iter()
+            .map(|varbind| value_to_string(varbind.value))
+            .collect();
 
-            Ok(values)
-        })
+        if values.len() != oids.len() {
+            return Err(SnmpError::WrongValueCount {
+                expected: oids.len(),
+                actual: values.len(),
+            });
+        }
+
+        Ok(values)
     }
 }
 
