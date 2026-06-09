@@ -1,9 +1,14 @@
 use crate::config::SnmpConfig;
 use async_snmp::{
+    transport::UdpTransport,
     v3::{AuthProtocol, PrivProtocol},
     Auth, Client, Oid, Retry, Value,
 };
-use std::{sync::Mutex, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Mutex,
+    time::Duration,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -27,8 +32,19 @@ pub enum SnmpError {
     Protocol(#[from] Box<async_snmp::Error>),
     #[error("failed to create async runtime for SNMP client: {0}")]
     Runtime(std::io::Error),
+    #[error("DNS lookup timed out for SNMP target {target}")]
+    ResolveTimeout { target: String },
+    #[error("failed to resolve SNMP target {target}: {source}")]
+    Resolve {
+        target: String,
+        source: std::io::Error,
+    },
+    #[error("failed to resolve SNMP target {0}: no addresses returned")]
+    ResolveNoAddress(String),
     #[error("cached SNMP client state is poisoned")]
     ClientStatePoisoned,
+    #[error("cached SNMP transport state is poisoned")]
+    TransportStatePoisoned,
     #[error("SNMP response returned {actual} values for {expected} requested OIDs")]
     WrongValueCount { expected: usize, actual: usize },
 }
@@ -40,6 +56,7 @@ pub trait SnmpClient {
 pub struct RustSnmpClient {
     config: SnmpConfig,
     runtime: tokio::runtime::Runtime,
+    transport: Mutex<Option<UdpTransport>>,
     client: Mutex<Option<Client>>,
 }
 
@@ -53,6 +70,7 @@ impl RustSnmpClient {
         Ok(Self {
             config,
             runtime,
+            transport: Mutex::new(None),
             client: Mutex::new(None),
         })
     }
@@ -66,16 +84,76 @@ impl RustSnmpClient {
         }
     }
 
+    fn resolve_target(&self) -> Result<SocketAddr, SnmpError> {
+        if let Ok(ip) = self.config.address.parse::<IpAddr>() {
+            return Ok(SocketAddr::new(ip, self.config.port));
+        }
+
+        let config = self.config.clone();
+        let target = format!("{}:{}", config.address, config.port);
+
+        self.runtime.block_on(async move {
+            let lookup = tokio::net::lookup_host((config.address.as_str(), config.port));
+            let mut addrs = tokio::time::timeout(config.timeout, lookup)
+                .await
+                .map_err(|_| SnmpError::ResolveTimeout {
+                    target: target.clone(),
+                })?
+                .map_err(|source| SnmpError::Resolve {
+                    target: target.clone(),
+                    source,
+                })?;
+
+            addrs.next().ok_or(SnmpError::ResolveNoAddress(target))
+        })
+    }
+
+    fn transport_for(&self, target: SocketAddr) -> Result<UdpTransport, SnmpError> {
+        if let Some(transport) = self
+            .transport
+            .lock()
+            .map_err(|_| SnmpError::TransportStatePoisoned)?
+            .as_ref()
+            .filter(|transport| transport.local_addr().is_ipv6() == target.is_ipv6())
+            .cloned()
+        {
+            return Ok(transport);
+        }
+
+        let bind_addr = if target.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let transport = self
+            .runtime
+            .block_on(UdpTransport::bind(bind_addr))
+            .map_err(SnmpError::Protocol)?;
+        let previous_transport = self
+            .transport
+            .lock()
+            .map_err(|_| SnmpError::TransportStatePoisoned)?
+            .replace(transport.clone());
+
+        if let Some(previous_transport) = previous_transport {
+            self.runtime.block_on(previous_transport.shutdown());
+        }
+
+        Ok(transport)
+    }
+
     fn connect(&self) -> Result<Client, SnmpError> {
         let auth = self.build_auth()?;
         let config = self.config.clone();
+        let target = self.resolve_target()?;
+        let transport = self.transport_for(target)?;
 
         self.runtime
             .block_on(async move {
-                Client::builder((config.address.as_str(), config.port), auth)
+                Client::builder(target, auth)
                     .timeout(config.timeout)
                     .retry(Retry::fixed(u32::from(config.retries), Duration::ZERO))
-                    .connect()
+                    .build_with(&transport)
                     .await
             })
             .map_err(SnmpError::Protocol)
@@ -105,6 +183,20 @@ impl RustSnmpClient {
             .lock()
             .map_err(|_| SnmpError::ClientStatePoisoned)? = None;
         Ok(())
+    }
+}
+
+impl Drop for RustSnmpClient {
+    fn drop(&mut self) {
+        if let Ok(client) = self.client.get_mut() {
+            *client = None;
+        }
+
+        if let Ok(transport) = self.transport.get_mut() {
+            if let Some(transport) = transport.take() {
+                self.runtime.block_on(transport.shutdown());
+            }
+        }
     }
 }
 
