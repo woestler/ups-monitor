@@ -105,7 +105,7 @@ fn main() -> Result<()> {
                 .with_context(|| format!("loading {}", cli.config.display()))?;
             init_logging(&config)?;
 
-            let snmp: Box<dyn SnmpClient> = Box::new(RustSnmpClient::new(config.snmp.clone()));
+            let snmp: Box<dyn SnmpClient> = Box::new(RustSnmpClient::new(config.snmp.clone())?);
             let adapter = build_adapter(config.ups.clone())?;
             let shutdown =
                 CommandShutdownExecutor::new(config.shutdown.dry_run, config.shutdown.command);
